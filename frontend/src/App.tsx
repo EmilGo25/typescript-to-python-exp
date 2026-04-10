@@ -4,6 +4,8 @@ import {
   generateProblem,
   submitSolution,
   getSolution,
+  extractSubjectFromImage,
+  submitArenaEvaluation,
   CATEGORIES,
   type Problem,
   type Evaluation,
@@ -12,6 +14,7 @@ import {
 } from './api';
 import ScorePanel from './components/ScorePanel';
 import SolutionPanel from './components/SolutionPanel';
+import ArenaReviewPanel from './components/ArenaReviewPanel';
 
 type Difficulty = 'easy' | 'medium' | 'hard';
 
@@ -30,6 +33,10 @@ export default function App() {
   const [userCode, setUserCode] = useState(PYTHON_STARTER);
   const [evaluation, setEvaluation] = useState<Evaluation | null>(null);
   const [solution, setSolution] = useState<Solution | null>(null);
+  const [customSubject, setCustomSubject] = useState('');
+  const [imageFileName, setImageFileName] = useState('');
+  const [codeVote, setCodeVote] = useState<string | null>(null);
+  const [codeVoteSubmitted, setCodeVoteSubmitted] = useState(false);
   const [loading, setLoading] = useState('');
   const [error, setError] = useState('');
 
@@ -38,9 +45,12 @@ export default function App() {
     setError('');
     setEvaluation(null);
     setSolution(null);
+    setCodeVote(null);
+    setCodeVoteSubmitted(false);
     setUserCode(PYTHON_STARTER);
     try {
-      const p = await generateProblem(difficulty, category);
+      const subject = category === 'custom' ? customSubject : undefined;
+      const p = await generateProblem(difficulty, category, subject);
       setProblem(p);
     } catch (e: any) {
       setError(e.message);
@@ -49,12 +59,42 @@ export default function App() {
     }
   }
 
+  function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        resolve(result.split(',')[1]);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImageFileName(file.name);
+    setLoading('Analyzing image...');
+    setError('');
+    try {
+      const base64 = await fileToBase64(file);
+      const subject = await extractSubjectFromImage(base64, file.type);
+      setCustomSubject(subject);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading('');
+    }
+  }
+
   async function handleSubmit() {
     if (!problem) return;
-    setLoading('Evaluating...');
+    setLoading('Evaluating via BlindBench Arena...');
     setError('');
     setSolution(null);
     try {
+      // Runs correctness + AST locally, then gets 2 blind reviews from BlindBench
       const ev = await submitSolution(problem.id, userCode);
       setEvaluation(ev);
     } catch (e: any) {
@@ -118,13 +158,37 @@ export default function App() {
             </select>
             <button
               onClick={handleGenerate}
-              disabled={!!loading}
+              disabled={!!loading || (category === 'custom' && !customSubject.trim())}
               className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-sm font-medium rounded transition-colors"
             >
               {loading === 'Generating problem...' ? 'Generating...' : 'New Problem'}
             </button>
           </div>
         </div>
+        {category === 'custom' && (
+          <div className="max-w-7xl mx-auto mt-3 flex items-center gap-3">
+            <input
+              type="text"
+              placeholder="Describe a custom subject (e.g. binary search trees, graph algorithms)..."
+              value={customSubject}
+              onChange={(e) => setCustomSubject(e.target.value)}
+              className="flex-1 px-3 py-1.5 text-sm rounded bg-gray-800 text-gray-300 border border-gray-700 placeholder-gray-600 focus:border-blue-500 focus:outline-none transition-colors"
+            />
+            <span className="text-xs text-gray-600">or</span>
+            <label className="px-3 py-1.5 text-xs font-medium rounded bg-gray-800 text-gray-300 border border-gray-700 cursor-pointer hover:border-gray-500 transition-colors whitespace-nowrap">
+              Upload Image
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                className="hidden"
+                onChange={handleImageUpload}
+              />
+            </label>
+            {imageFileName && (
+              <span className="text-xs text-green-400 truncate max-w-[150px]">{imageFileName}</span>
+            )}
+          </div>
+        )}
       </header>
 
       <main className="max-w-7xl mx-auto p-6">
@@ -172,49 +236,140 @@ export default function App() {
               </div>
             </div>
 
-            {/* Code panels */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-              {/* TypeScript panel */}
-              <div>
-                <div className="text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">TypeScript (read-only)</div>
-                <div className="rounded-lg overflow-hidden border border-gray-800">
-                  <Editor
-                    height="400px"
-                    language="typescript"
-                    value={problem.typescript_code}
-                    theme="vs-dark"
-                    options={{
-                      readOnly: true,
-                      minimap: { enabled: false },
-                      fontSize: 13,
-                      scrollBeyondLastLine: false,
-                      lineNumbers: 'on',
-                    }}
-                  />
+            {/* Code panels — 2 arena versions + user solution */}
+            {(problem.code_versions?.length ?? 0) >= 2 ? (
+              <>
+                {/* Two arena code versions side by side */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+                  {problem.code_versions!.map((cv) => (
+                    <div key={cv.label}>
+                      <div className="text-xs font-medium text-purple-400 mb-1 uppercase tracking-wide flex items-center gap-2">
+                        {cv.label}
+                        <span className="text-gray-600 normal-case">(read-only)</span>
+                      </div>
+                      <div className="rounded-lg overflow-hidden border border-purple-800/40">
+                        <Editor
+                          height="350px"
+                          language="typescript"
+                          value={cv.typescript_code}
+                          theme="vs-dark"
+                          options={{
+                            readOnly: true,
+                            minimap: { enabled: false },
+                            fontSize: 13,
+                            scrollBeyondLastLine: false,
+                            lineNumbers: 'on',
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              </div>
 
-              {/* Python panel */}
-              <div>
-                <div className="text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">Your Python Solution</div>
-                <div className="rounded-lg overflow-hidden border border-gray-800">
-                  <Editor
-                    height="400px"
-                    language="python"
-                    value={userCode}
-                    theme="vs-dark"
-                    onChange={(v) => setUserCode(v ?? '')}
-                    options={{
-                      minimap: { enabled: false },
-                      fontSize: 13,
-                      scrollBeyondLastLine: false,
-                      lineNumbers: 'on',
-                      tabSize: 4,
-                    }}
-                  />
+                {/* User's Python solution — full width */}
+                <div className="mb-4">
+                  <div className="text-xs font-medium text-green-400 mb-1 uppercase tracking-wide">
+                    Your Python Solution
+                  </div>
+                  <div className="rounded-lg overflow-hidden border border-green-800/40">
+                    <Editor
+                      height="350px"
+                      language="python"
+                      value={userCode}
+                      theme="vs-dark"
+                      onChange={(v) => setUserCode(v ?? '')}
+                      options={{
+                        minimap: { enabled: false },
+                        fontSize: 13,
+                        scrollBeyondLastLine: false,
+                        lineNumbers: 'on',
+                        tabSize: 4,
+                      }}
+                    />
+                  </div>
+                </div>
+              </>
+            ) : (
+              /* Fallback: single TypeScript + user solution */
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+                <div>
+                  <div className="text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">TypeScript (read-only)</div>
+                  <div className="rounded-lg overflow-hidden border border-gray-800">
+                    <Editor
+                      height="400px"
+                      language="typescript"
+                      value={problem.typescript_code}
+                      theme="vs-dark"
+                      options={{
+                        readOnly: true,
+                        minimap: { enabled: false },
+                        fontSize: 13,
+                        scrollBeyondLastLine: false,
+                        lineNumbers: 'on',
+                      }}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">Your Python Solution</div>
+                  <div className="rounded-lg overflow-hidden border border-gray-800">
+                    <Editor
+                      height="400px"
+                      language="python"
+                      value={userCode}
+                      theme="vs-dark"
+                      onChange={(v) => setUserCode(v ?? '')}
+                      options={{
+                        minimap: { enabled: false },
+                        fontSize: 13,
+                        scrollBeyondLastLine: false,
+                        lineNumbers: 'on',
+                        tabSize: 4,
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
+
+            {/* Vote: which code version is better */}
+            {(problem.code_versions?.length ?? 0) >= 2 && (
+              <div className="mb-4 p-3 bg-gray-900 rounded-lg border border-purple-800/30">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-purple-300 uppercase tracking-wide font-medium">
+                    Which code version is better?
+                  </span>
+                  <div className="flex gap-2">
+                    {problem.code_versions!.map((cv) => (
+                      <button
+                        key={cv.label}
+                        onClick={async () => {
+                          setCodeVote(cv.label);
+                          if (problem.blind_presentation_id && !codeVoteSubmitted) {
+                            try {
+                              await submitArenaEvaluation({
+                                blind_presentation_id: problem.blind_presentation_id,
+                                best_response_label: cv.label,
+                              });
+                              setCodeVoteSubmitted(true);
+                            } catch { /* best effort */ }
+                          }
+                        }}
+                        disabled={codeVoteSubmitted}
+                        className={`px-4 py-1.5 text-xs font-medium rounded transition-colors ${
+                          codeVote === cv.label
+                            ? 'bg-purple-600 text-white'
+                            : 'bg-gray-800 text-gray-400 hover:text-gray-200'
+                        }`}
+                      >
+                        {cv.label}
+                        {codeVote === cv.label && codeVoteSubmitted && ' ✓'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Action buttons */}
             <div className="flex gap-3 mb-6">
@@ -223,7 +378,7 @@ export default function App() {
                 disabled={!!loading}
                 className="px-6 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 font-medium rounded transition-colors"
               >
-                {loading === 'Evaluating...' ? 'Evaluating...' : 'Submit Solution'}
+                {loading && loading.startsWith('Evaluating') ? 'Evaluating...' : 'Submit Solution'}
               </button>
               <button
                 onClick={handleShowSolution}
@@ -238,6 +393,14 @@ export default function App() {
             {evaluation && (
               <div className="p-5 bg-gray-900 rounded-lg border border-gray-800 mb-4">
                 <ScorePanel evaluation={evaluation} />
+              </div>
+            )}
+            {evaluation?.arena && (
+              <div className="p-5 bg-gray-900 rounded-lg border border-purple-800/50 mb-4">
+                <ArenaReviewPanel
+                  arenaReview={evaluation.arena}
+                  onEvaluated={() => {}}
+                />
               </div>
             )}
             {solution && (

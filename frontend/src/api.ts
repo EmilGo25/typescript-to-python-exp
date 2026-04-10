@@ -6,9 +6,15 @@ export interface TestCase {
 }
 
 export const CATEGORIES = [
-  'arrays', 'objects', 'strings', 'classes', 'recursion', 'async', 'functions',
+  'arrays', 'objects', 'strings', 'classes', 'recursion', 'async', 'functions', 'custom',
 ] as const;
 export type Category = typeof CATEGORIES[number];
+
+export interface CodeVersion {
+  label: string;
+  typescript_code: string;
+  python_solution: string;
+}
 
 export interface Problem {
   id: number;
@@ -20,6 +26,8 @@ export interface Problem {
   example_input: string;
   example_output: string;
   test_cases: TestCase[];
+  code_versions: CodeVersion[];
+  blind_presentation_id: string | null;
 }
 
 export interface TestResult {
@@ -36,11 +44,8 @@ export interface Evaluation {
   overall_score: number;
   correctness_score: number;
   ast_score: number;
-  llm_score: number;
   test_results: TestResult[];
-  llm_feedback: string;
-  improvements: string[];
-  conventions: string[];
+  arena: ArenaReview | null;
 }
 
 export interface Solution {
@@ -50,11 +55,19 @@ export interface Solution {
   explanation: string;
 }
 
-export async function generateProblem(difficulty: string, category: string): Promise<Problem> {
+export async function generateProblem(
+  difficulty: string,
+  category: string,
+  customSubject?: string,
+): Promise<Problem> {
   const res = await fetch(`${BASE}/generate-problem`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ difficulty, category }),
+    body: JSON.stringify({
+      difficulty,
+      category,
+      ...(customSubject ? { custom_subject: customSubject } : {}),
+    }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
@@ -83,4 +96,54 @@ export async function getSolution(problemId: number): Promise<Solution> {
     throw new Error(err.detail || 'Failed to get solution');
   }
   return res.json();
+}
+
+// ---------- BlindBench Arena ----------
+
+export interface ArenaBlindResponse {
+  label: string;
+  content: string;
+  latency_ms: number;
+}
+
+export interface ArenaReview {
+  prompt_id: string;
+  blind_presentation_id: string;
+  responses: ArenaBlindResponse[];
+}
+
+export async function submitArenaEvaluation(data: {
+  blind_presentation_id: string;
+  best_response_label: string;
+  scores?: { response_label: string; score: number }[];
+}): Promise<{ id: string }> {
+  const res = await fetch(`${BASE}/arena-evaluate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || 'Failed to submit arena evaluation');
+  }
+  return res.json();
+}
+
+// ---------- Image ----------
+
+export async function extractSubjectFromImage(
+  imageData: string,
+  mediaType: string,
+): Promise<string> {
+  const res = await fetch(`${BASE}/extract-subject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image_data: imageData, media_type: mediaType }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || 'Failed to extract subject from image');
+  }
+  const data = await res.json();
+  return data.subject;
 }

@@ -26,6 +26,7 @@ class Problem(Base):
     test_cases = Column(Text, nullable=False)  # JSON string
     example_input = Column(Text, nullable=False)
     example_output = Column(Text, nullable=False)
+    custom_subject = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
 
 
