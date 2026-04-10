@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import Editor from '@monaco-editor/react';
 import {
-  generateProblem,
+  generateProblemStream,
   submitSolution,
   getSolution,
   extractSubjectFromImage,
@@ -11,6 +11,7 @@ import {
   type Evaluation,
   type Solution,
   type Category,
+  type CodeVersion,
 } from './api';
 import ScorePanel from './components/ScorePanel';
 import SolutionPanel from './components/SolutionPanel';
@@ -40,21 +41,108 @@ export default function App() {
   const [loading, setLoading] = useState('');
   const [error, setError] = useState('');
 
+  // Streaming code buffers — stored in refs so SSE callbacks don't stale-close over state
+  const streamingCodesRef = useRef<Record<string, string>>({});
+  const [streamingCodes, setStreamingCodes] = useState<Record<string, string>>({});
+  const [streamingLabels, setStreamingLabels] = useState<string[]>([]);
+  const [streamingMeta, setStreamingMeta] = useState<{
+    title: string; description: string;
+    example_input: string; example_output: string;
+  } | null>(null);
+  const [streamingDone, setStreamingDone] = useState(false);
+
   async function handleGenerate() {
-    setLoading('Generating problem...');
+    setLoading('Generating problem via BlindBench Arena...');
     setError('');
     setEvaluation(null);
     setSolution(null);
+    setProblem(null);
     setCodeVote(null);
     setCodeVoteSubmitted(false);
     setUserCode(PYTHON_STARTER);
+    setStreamingCodes({});
+    setStreamingLabels([]);
+    setStreamingMeta(null);
+    setStreamingDone(false);
+    streamingCodesRef.current = {};
+
+    const subject = category === 'custom' ? customSubject : undefined;
+    let blindPresentationId: string | null = null;
+    let funcName = '';
+    let testCases: any[] = [];
+    const solutionsRef: Record<string, string> = {};
+
     try {
-      const subject = category === 'custom' ? customSubject : undefined;
-      const p = await generateProblem(difficulty, category, subject);
-      setProblem(p);
+      await generateProblemStream(difficulty, category, {
+        onMeta: (meta) => {
+          setStreamingMeta({
+            title: meta.title,
+            description: meta.description,
+            example_input: meta.example_input,
+            example_output: meta.example_output,
+          });
+          funcName = meta.func_name;
+          testCases = meta.test_cases;
+          blindPresentationId = meta.blind_presentation_id;
+          setLoading('Streaming code...');
+        },
+        onCodeStart: (label) => {
+          setStreamingLabels((prev) => [...prev, label]);
+          streamingCodesRef.current[label] = '';
+          setStreamingCodes({ ...streamingCodesRef.current });
+        },
+        onCodeToken: (label, token) => {
+          streamingCodesRef.current[label] = (streamingCodesRef.current[label] || '') + token;
+          setStreamingCodes({ ...streamingCodesRef.current });
+        },
+        onCodeEnd: (_label) => {
+          setStreamingCodes({ ...streamingCodesRef.current });
+        },
+        onSolutions: (solutions) => {
+          Object.assign(solutionsRef, solutions);
+        },
+        onCodeVersions: (codeVersions) => {
+          // Replace raw streamed JSON with extracted clean TypeScript code
+          for (const [label, code] of Object.entries(codeVersions)) {
+            streamingCodesRef.current[label] = code;
+          }
+          setStreamingCodes({ ...streamingCodesRef.current });
+        },
+        onDone: () => {
+          setStreamingDone(true);
+          setLoading('');
+          // Build the final Problem object from parsed metadata + clean code
+          const codeVersions: CodeVersion[] = Object.entries(streamingCodesRef.current).map(
+            ([label, code]) => ({
+              label,
+              typescript_code: code,
+              python_solution: solutionsRef[label] || '',
+            }),
+          );
+          const meta = {
+            title: streamingMeta?.title || '',
+            description: streamingMeta?.description || '',
+            example_input: streamingMeta?.example_input || '',
+            example_output: streamingMeta?.example_output || '',
+          };
+          setProblem({
+            id: 0,
+            difficulty,
+            category,
+            ...meta,
+            typescript_code: codeVersions[0]?.typescript_code || '',
+            test_cases: testCases,
+            code_versions: codeVersions,
+            blind_presentation_id: blindPresentationId,
+          });
+        },
+        onError: (message) => {
+          setError(message);
+          setLoading('');
+        },
+      }, subject);
     } catch (e: any) {
       setError(e.message);
-    } finally {
       setLoading('');
     }
   }
@@ -204,11 +292,53 @@ export default function App() {
           </div>
         )}
 
-        {!problem && !loading && (
+        {/* Streaming code generation in progress */}
+        {!problem && streamingLabels.length > 0 && (
+          <>
+            {streamingMeta && (
+              <div className="mb-4 p-4 bg-gray-900 rounded-lg border border-gray-800">
+                <h2 className="text-lg font-semibold">{streamingMeta.title}</h2>
+                <p className="text-sm text-gray-400 mt-1">{streamingMeta.description}</p>
+                <div className="text-xs text-gray-500 font-mono mt-2">
+                  <span className="text-gray-600">Example:</span> {streamingMeta.example_input} &rarr; {streamingMeta.example_output}
+                </div>
+              </div>
+            )}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+              {streamingLabels.map((label) => (
+                <div key={label}>
+                  <div className="text-xs font-medium text-purple-400 mb-1 uppercase tracking-wide flex items-center gap-2">
+                    {label}
+                    {!streamingDone && (
+                      <span className="inline-block w-1.5 h-3 bg-purple-400 animate-pulse" />
+                    )}
+                  </div>
+                  <div className="rounded-lg overflow-hidden border border-purple-800/40">
+                    <Editor
+                      height="350px"
+                      language="typescript"
+                      value={streamingCodes[label] || ''}
+                      theme="vs-dark"
+                      options={{
+                        readOnly: true,
+                        minimap: { enabled: false },
+                        fontSize: 13,
+                        scrollBeyondLastLine: false,
+                        lineNumbers: 'on',
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {!problem && !loading && streamingLabels.length === 0 && (
           <div className="flex items-center justify-center h-96 text-gray-600">
             <div className="text-center">
               <p className="text-lg mb-2">Select a difficulty and click "New Problem" to start</p>
-              <p className="text-sm">You'll get a TypeScript function to translate into Python</p>
+              <p className="text-sm">You'll get two TypeScript versions to translate into Python</p>
             </div>
           </div>
         )}

@@ -64,6 +64,42 @@ def _call_router(prompt: str, category: str = "coding") -> str:
         return data["response"]["content"]
 
 
+def stream_from_router(
+    prompt: str,
+    category: str = "coding",
+    image_base64: str | None = None,
+):
+    """Stream tokens from BlindBench router. Yields (event_type, data) tuples.
+
+    event_type is one of: 'routing', 'token', 'done', 'error'
+    """
+    payload: dict = {"content": prompt, "category": category}
+    if image_base64:
+        payload["imageBase64"] = image_base64
+
+    with httpx.Client(base_url=BLINDBENCH_URL, timeout=300.0) as client:
+        with client.stream(
+            "POST", "/api/router/stream", json=payload,
+        ) as response:
+            response.raise_for_status()
+            buffer = ""
+            for chunk in response.iter_text():
+                buffer += chunk
+                while "\n\n" in buffer:
+                    event_str, buffer = buffer.split("\n\n", 1)
+                    if not event_str.strip():
+                        continue
+                    event_type = None
+                    data = None
+                    for line in event_str.strip().split("\n"):
+                        if line.startswith("event:"):
+                            event_type = line[6:].strip()
+                        elif line.startswith("data:"):
+                            data = line[5:].strip()
+                    if event_type and data:
+                        yield event_type, data
+
+
 def submit_evaluation(
     blind_presentation_id: str,
     best_label: str,

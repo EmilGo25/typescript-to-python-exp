@@ -6,6 +6,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,7 +27,7 @@ from app.models.schemas import (
     SubmitSolutionRequest,
     TestCase,
 )
-from app.services.blindbench_client import run_arena_review, submit_evaluation
+from app.services.blindbench_client import run_arena_review, submit_evaluation, stream_from_router
 from app.services.evaluator import evaluate
 from app.services.llm_service import (
     explain_solution,
@@ -109,6 +110,126 @@ async def generate_problem_endpoint(
         test_cases=[TestCase(**tc) for tc in problem_data["test_cases"]],
         code_versions=[CodeVersion(**cv) for cv in code_versions_raw],
         blind_presentation_id=blind_presentation_id,
+    )
+
+
+_FULL_PROBLEM_PROMPT = """\
+You are an expert TypeScript and Python instructor. \
+Generate a TypeScript-to-Python translation problem at {difficulty} difficulty \
+focused on "{category}".
+
+Write:
+1. A short title
+2. A description of what the function does
+3. The full TypeScript function
+4. The equivalent idiomatic Python function
+5. An example input and output
+6. 5 test cases
+
+Return valid JSON with this structure:
+{{"title":"...","description":"...","typescript_code":"...","python_solution":"...","func_name":"...","example_input":"...","example_output":"...","test_cases":[{{"input":"[arg]","expected_output":"result"}}]}}
+"""
+
+
+@router.post("/generate-problem-stream")
+async def generate_problem_stream_endpoint(
+    request: GenerateProblemRequest,
+):
+    """Stream problem generation directly — no arena wait.
+
+    Streams two code implementations token-by-token from two different models
+    via BlindBench router/stream. First token arrives in ~1-2s.
+    """
+
+    async def event_stream():
+        category = request.category or "arrays"
+        custom_subject = request.custom_subject if category == "custom" else None
+
+        if custom_subject:
+            base_prompt = _FULL_PROBLEM_PROMPT.replace(
+                '"{category}"', f'the custom subject: {custom_subject}'
+            ).format(difficulty=request.difficulty, category=custom_subject)
+        else:
+            base_prompt = _FULL_PROBLEM_PROMPT.format(
+                difficulty=request.difficulty, category=category,
+            )
+
+        labels = ["Response A", "Response B"]
+        full_texts: dict[str, str] = {}
+
+        # Stream both versions sequentially (Ollama can only run one at a time)
+        for label in labels:
+            yield f"event: code_start\ndata: {json.dumps({'label': label})}\n\n"
+            full_text = ""
+            try:
+                for event_type, data in stream_from_router(base_prompt, category="coding"):
+                    if event_type == "token":
+                        parsed = json.loads(data)
+                        token = parsed.get("token", "")
+                        full_text += token
+                        yield f"event: code_token\ndata: {json.dumps({'label': label, 'token': token})}\n\n"
+                    elif event_type == "done":
+                        break
+                    elif event_type == "error":
+                        yield f"event: error\ndata: {data}\n\n"
+                        break
+            except Exception as e:
+                yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+                return
+
+            full_texts[label] = full_text
+            yield f"event: code_end\ndata: {json.dumps({'label': label})}\n\n"
+
+        # Parse JSON from both responses to extract metadata
+        from app.services.blindbench_client import _try_parse_json
+
+        parsed_problems = {}
+        for label, text in full_texts.items():
+            parsed = _try_parse_json(text)
+            if parsed and "typescript_code" in parsed:
+                parsed_problems[label] = parsed
+
+        if not parsed_problems:
+            yield f"event: error\ndata: {json.dumps({'message': 'Could not parse problem JSON from responses'})}\n\n"
+            return
+
+        # Use first valid response for metadata
+        primary_label = next(iter(parsed_problems))
+        primary = parsed_problems[primary_label]
+
+        # Normalize test cases
+        for tc in primary.get("test_cases", []):
+            if not isinstance(tc.get("input"), str):
+                tc["input"] = json.dumps(tc["input"])
+            if not isinstance(tc.get("expected_output"), str):
+                tc["expected_output"] = json.dumps(tc["expected_output"])
+
+        meta = {
+            "title": primary.get("title", ""),
+            "description": primary.get("description", ""),
+            "example_input": primary.get("example_input", ""),
+            "example_output": primary.get("example_output", ""),
+            "func_name": primary.get("func_name", ""),
+            "test_cases": primary.get("test_cases", []),
+            "blind_presentation_id": None,
+        }
+        yield f"event: meta\ndata: {json.dumps(meta)}\n\n"
+
+        # Send extracted code + solutions
+        solutions = {}
+        code_versions = {}
+        for label, parsed in parsed_problems.items():
+            solutions[label] = parsed.get("python_solution", "")
+            code_versions[label] = parsed.get("typescript_code", "")
+
+        yield f"event: solutions\ndata: {json.dumps(solutions)}\n\n"
+        yield f"event: code_versions\ndata: {json.dumps(code_versions)}\n\n"
+        yield f"event: done\ndata: {json.dumps({'status': 'complete'})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
 
 

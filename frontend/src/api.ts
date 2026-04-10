@@ -76,6 +76,88 @@ export async function generateProblem(
   return res.json();
 }
 
+export interface StreamCallbacks {
+  onMeta: (meta: {
+    title: string;
+    description: string;
+    example_input: string;
+    example_output: string;
+    func_name: string;
+    test_cases: TestCase[];
+    blind_presentation_id: string | null;
+  }) => void;
+  onCodeStart: (label: string) => void;
+  onCodeToken: (label: string, token: string) => void;
+  onCodeEnd: (label: string) => void;
+  onSolutions: (solutions: Record<string, string>) => void;
+  onCodeVersions: (codeVersions: Record<string, string>) => void;
+  onDone: () => void;
+  onError: (message: string) => void;
+}
+
+export async function generateProblemStream(
+  difficulty: string,
+  category: string,
+  callbacks: StreamCallbacks,
+  customSubject?: string,
+): Promise<void> {
+  const res = await fetch(`${BASE}/generate-problem-stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      difficulty,
+      category,
+      ...(customSubject ? { custom_subject: customSubject } : {}),
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    callbacks.onError(err.detail || 'Failed to start generation');
+    return;
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) { callbacks.onError('No response body'); return; }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    while (buffer.includes('\n\n')) {
+      const idx = buffer.indexOf('\n\n');
+      const eventStr = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+
+      if (!eventStr.trim()) continue;
+
+      let eventType: string | null = null;
+      let data: string | null = null;
+      for (const line of eventStr.split('\n')) {
+        if (line.startsWith('event:')) eventType = line.slice(6).trim();
+        else if (line.startsWith('data:')) data = line.slice(5).trim();
+      }
+      if (!eventType || !data) continue;
+
+      const parsed = JSON.parse(data);
+      switch (eventType) {
+        case 'meta': callbacks.onMeta(parsed); break;
+        case 'code_start': callbacks.onCodeStart(parsed.label); break;
+        case 'code_token': callbacks.onCodeToken(parsed.label, parsed.token); break;
+        case 'code_end': callbacks.onCodeEnd(parsed.label); break;
+        case 'solutions': callbacks.onSolutions(parsed); break;
+        case 'code_versions': callbacks.onCodeVersions(parsed); break;
+        case 'done': callbacks.onDone(); break;
+        case 'error': callbacks.onError(parsed.message); break;
+      }
+    }
+  }
+}
+
 export async function submitSolution(problemId: number, userCode: string): Promise<Evaluation> {
   const res = await fetch(`${BASE}/submit-solution`, {
     method: 'POST',
