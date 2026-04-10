@@ -5,9 +5,15 @@ export interface TestCase {
   expected_output: string;
 }
 
+export const CATEGORIES = [
+  'arrays', 'objects', 'strings', 'classes', 'recursion', 'async', 'functions',
+] as const;
+export type Category = typeof CATEGORIES[number];
+
 export interface Problem {
   id: number;
   difficulty: string;
+  category: string;
   title: string;
   description: string;
   typescript_code: string;
@@ -44,11 +50,11 @@ export interface Solution {
   explanation: string;
 }
 
-export async function generateProblem(difficulty: string): Promise<Problem> {
+export async function generateProblem(difficulty: string, category: string): Promise<Problem> {
   const res = await fetch(`${BASE}/generate-problem`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ difficulty }),
+    body: JSON.stringify({ difficulty, category }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));

@@ -18,6 +18,7 @@ class Problem(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     difficulty = Column(String(10), nullable=False)
+    category = Column(String(30), nullable=False, default="arrays")
     title = Column(String(200), nullable=False)
     description = Column(Text, nullable=False)
     typescript_code = Column(Text, nullable=False)

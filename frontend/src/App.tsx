@@ -4,9 +4,11 @@ import {
   generateProblem,
   submitSolution,
   getSolution,
+  CATEGORIES,
   type Problem,
   type Evaluation,
   type Solution,
+  type Category,
 } from './api';
 import ScorePanel from './components/ScorePanel';
 import SolutionPanel from './components/SolutionPanel';
@@ -23,6 +25,7 @@ const PYTHON_STARTER = '# Write your Python solution here\n\n';
 
 export default function App() {
   const [difficulty, setDifficulty] = useState<Difficulty>('medium');
+  const [category, setCategory] = useState<Category>('arrays');
   const [problem, setProblem] = useState<Problem | null>(null);
   const [userCode, setUserCode] = useState(PYTHON_STARTER);
   const [evaluation, setEvaluation] = useState<Evaluation | null>(null);
@@ -37,7 +40,7 @@ export default function App() {
     setSolution(null);
     setUserCode(PYTHON_STARTER);
     try {
-      const p = await generateProblem(difficulty);
+      const p = await generateProblem(difficulty, category);
       setProblem(p);
     } catch (e: any) {
       setError(e.message);
@@ -103,6 +106,16 @@ export default function App() {
                 </button>
               ))}
             </div>
+            {/* Category selector */}
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value as Category)}
+              className="px-3 py-1 text-xs font-medium rounded bg-gray-800 text-gray-300 border border-gray-700 capitalize cursor-pointer hover:border-gray-500 transition-colors"
+            >
+              {CATEGORIES.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
             <button
               onClick={handleGenerate}
               disabled={!!loading}
@@ -148,6 +161,9 @@ export default function App() {
                   'bg-red-900 text-red-300'
                 }`}>
                   {problem.difficulty}
+                </span>
+                <span className="text-xs px-2 py-0.5 rounded capitalize bg-blue-900 text-blue-300">
+                  {problem.category}
                 </span>
               </div>
               <p className="text-sm text-gray-400 mb-2">{problem.description}</p>

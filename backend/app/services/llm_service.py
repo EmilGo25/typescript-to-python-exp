@@ -50,12 +50,22 @@ You are an expert TypeScript and Python instructor. Generate coding problems \
 that help TypeScript developers learn Python. Return valid JSON only."""
 
 _PROBLEM_PROMPT_TEMPLATE = """\
-Generate a TypeScript-to-Python translation problem at {difficulty} difficulty.
+Generate a TypeScript-to-Python translation problem at {difficulty} difficulty \
+focused on the "{category}" category.
+
+Category guidelines:
+- arrays: map/filter/reduce, sorting, slicing, spread, flat, find
+- objects: dictionary transformations, merging, destructuring, key/value operations
+- strings: template literals, regex, split/join, parsing, formatting
+- classes: class inheritance, methods, properties, static members, encapsulation
+- recursion: tree traversal, divide-and-conquer, memoization, nested structures
+- async: promises, async/await patterns, callbacks (translate to sync Python equivalents)
+- functions: closures, higher-order functions, decorators, currying, generators
 
 Difficulty guidelines:
-- easy: array operations (map/filter/reduce), string manipulation, simple math
-- medium: object/dictionary transformations, nested data, multiple functions
-- hard: recursion, async patterns, class-based logic, generators
+- easy: simple usage of the category concepts, single function
+- medium: combining multiple patterns, edge cases, nested data
+- hard: complex real-world scenarios, performance considerations, multiple interacting parts
 
 Return a JSON object with EXACTLY this structure (no markdown, no extra text):
 {{
@@ -85,9 +95,9 @@ IMPORTANT rules:
 """
 
 
-def generate_problem(difficulty: str) -> dict[str, Any]:
+def generate_problem(difficulty: str, category: str = "arrays") -> dict[str, Any]:
     """Generate a problem using the LLM."""
-    prompt = _PROBLEM_PROMPT_TEMPLATE.format(difficulty=difficulty)
+    prompt = _PROBLEM_PROMPT_TEMPLATE.format(difficulty=difficulty, category=category)
     response = _call_llm(_PROBLEM_SYSTEM, prompt)
 
     # Strip markdown code fences if present

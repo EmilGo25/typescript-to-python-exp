@@ -29,7 +29,8 @@ async def generate_problem_endpoint(
 ) -> ProblemResponse:
     """Generate a new TypeScript-to-Python translation problem."""
     try:
-        problem_data = generate_problem(request.difficulty)
+        category = request.category or "arrays"
+        problem_data = generate_problem(request.difficulty, category)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM generation failed: {e}")
 
@@ -53,6 +54,7 @@ async def generate_problem_endpoint(
 
     db_problem = Problem(
         difficulty=request.difficulty,
+        category=category,
         title=problem_data["title"],
         description=problem_data["description"],
         typescript_code=problem_data["typescript_code"],
@@ -68,6 +70,7 @@ async def generate_problem_endpoint(
     return ProblemResponse(
         id=db_problem.id,
         difficulty=db_problem.difficulty,
+        category=db_problem.category,
         title=db_problem.title,
         description=db_problem.description,
         typescript_code=db_problem.typescript_code,

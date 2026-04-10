@@ -5,11 +5,26 @@ from pydantic import BaseModel, Field
 
 # ---------- Request schemas ----------
 
+CATEGORIES = [
+    "arrays",
+    "objects",
+    "strings",
+    "classes",
+    "recursion",
+    "async",
+    "functions",
+]
+
+
 class GenerateProblemRequest(BaseModel):
     difficulty: str = Field(
         default="medium",
         pattern="^(easy|medium|hard)$",
         description="Problem difficulty: easy, medium, or hard",
+    )
+    category: Optional[str] = Field(
+        default=None,
+        description="Language category: arrays, objects, strings, classes, recursion, async, functions",
     )
 
 
@@ -28,6 +43,7 @@ class TestCase(BaseModel):
 class ProblemResponse(BaseModel):
     id: int
     difficulty: str
+    category: str
     title: str
     description: str
     typescript_code: str
